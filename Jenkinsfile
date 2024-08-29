@@ -18,9 +18,9 @@ pipeline {
         }
 
         stage('Git Checkout') {
-                git branch: 'main', credentialsId: 'jenkins-sonarqube-webhook-token', url: 'https://github.com/csbasic/Boardgame.git'
-            }
+            git branch: 'main', credentialsId: 'jenkins-sonarqube-webhook-token', url: 'https://github.com/csbasic/Boardgame.git'
         }
+        
 
         stage('Compile') {
             steps {
@@ -36,13 +36,13 @@ pipeline {
 
         stage('File System Scan') {
             steps {
-                sh 'trivy fs --format table -o trivy-fs-report.html'
+                sh 'trivy fs --format table -o trivy-fs-report.html .'
             }
         }
         
         stage('SonarQube Analysis') {
             script {
-                withSonarQubeEnv('jenkins-sonarqube-token') { // using sonar plugin - sonar is already set with credentials 
+                withSonarQubeEnv('sonar-jenkins-token') { // using sonar plugin - sonar is already set with credentials 
                     sh ''' 
                     $SCANNER_HOME/bin/sonar-scanner \
                     -Dsonar.projectName=BoardGame \
@@ -56,7 +56,7 @@ pipeline {
         stage("Quality Gate") {
             steps {
                 script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'jenkins-sonarqube-webhook-token' // set a webhook to have access to quality gate
+                    waitForQualityGate abortPipeline: false, credentialsId: 'jenkins-sonar-webhook' // set a webhook to have access to quality gate
                 }
             }
         }
@@ -79,7 +79,7 @@ pipeline {
             steps {
                script {
                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                            sh "docker build -t csbasic/boardshack:latest ."
+                        sh "docker build -t csbasic/boardshark:latest ."
                     }
                }
             }
@@ -103,20 +103,56 @@ pipeline {
         
         stage('Deploy To Kubernetes') {
             steps {
-               withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.8.146:6443') {
-                        sh "kubectl apply -f deployment-service.yaml"
+               
+                withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.26.190:6443') {
+                    sh "kubectl apply -f deployment-service.yaml"
                 }
             }
         }
         
         stage('Verify the Deployment') {
             steps {
-               withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.8.146:6443') {
+               withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.26.190:6443') {
                         sh "kubectl get pods -n webapps"
                         sh "kubectl get svc -n webapps"
                 }
             }
         }
+    }
 
+    post {
+        always {
+            script {
+                def jobName = env.JOB_NAME
+                def buildNumber = env.BUILD_NUMBER
+                def pipelineStatus = currentBuild.result ?: 'UNKNOWN'
+                def bannerColor = pipelineStatus.toUpperCase() == 'SUCCESS' ? 'green' : 'red'
+
+                def body = """
+                    <html>
+                    <body>
+                    <div style="border: 4px solid ${bannerColor}; padding: 10px;">
+                    <h2>${jobName} - Build ${buildNumber}</h2>
+                    <div style="background-color: ${bannerColor}; padding: 10px;">
+                    <h3 style="color: white;">Pipeline Status: ${pipelineStatus.toUpperCase()}</h3>
+                    </div>
+                    <p>Check the <a href="${BUILD_URL}">console output</a>.</p>
+                    </div>
+                    </body>
+                    </html>
+                """
+
+                emailext (
+                    subject: "${jobName} - Build ${buildNumber} - ${pipelineStatus.toUpperCase()}",
+                    body: body,
+                    to: 'chijokae@gmail.com',
+                    from: 'jenkins@example.com',
+                    replyTo: 'jenkins@example.com',
+                    mimeType: 'text/html',
+                    attachmentsPattern: 'trivy-image-report.html'
+                )
+            }
+        }
     }
 }
+
